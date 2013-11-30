@@ -25,15 +25,21 @@ $developmentMode = '';
 
 // Global iTunes Production Level Setting
 $iTunesProductionLevel = '';
- 
+
 // Global iTunes Receipt Validation Caching Setting
 $iTunesCachingDuration = -1;
 
+// Global iTunes Receipt Validation Caching Setting
+$subscriptionBehavior = '';
+
+// API Version
+$apiVersion = '1.1';
+
 // DB Setup for Pimple Container
-// MagRocket API SETUP CONFIGURATION SETTING
+// BakerCloud API SETUP CONFIGURATION SETTING
 // ************************************************************
 $dbContainer['db.options'] = array(
-	'host' => 'localhost',							// CONFIGURE TO YOUR DB HOSTNAME					
+	'host' => 'localhost',						// CONFIGURE TO YOUR DB HOSTNAME					
 	'username' => 'bakerc_ce',					// CONFIGURE TO YOUR DB USERNAME		
 	'password' => 'baker',						// CONFIGURE TO YOUR DB USERNAME'S PASSWORD
 	'dbname' => 'bakerc_cloudce'				// CONFIGURE TO YOUR DB INSTANCE NAME
@@ -149,7 +155,7 @@ $app->get('/', function () {
 });
 
 // Check DB Connectivity
-// *Makes connection to Baker Cloud Console (CE) DB and tries to make a select from the PUBLICATION table
+// *Makes connection to BakerCloud DB and tries to make a select from the PUBLICATION table
 $app->get('/checkinstall/', function ()
 {  
 	try {	
@@ -160,11 +166,31 @@ $app->get('/checkinstall/', function ()
 	
 		$result->execute();
 		$checkInstall = $result->fetchAll();
+
+		logAnalyticMetric(AnalyticType::ApiInteraction,1,NULL,$app_id,$user_id);
 		
-		echo '{"Baker Cloud API":{"Success":"Database Connection Test Successful"}}';
+		echo '{"BakerCloud API":{"Success":"Database Connection Test Successful"}}';
 	}
 	catch(PDOException $e) {
-		echo '{"Baker Cloud API":{"Error":"' . $e->getMessage() . '"}}';
+		echo '{"BakerCloud API":{"Error":"' . $e->getMessage() . '"}}';
+	}
+});
+
+// Output Debug Information
+// *Outputs the settings for a given publication that the API is registering, useful when debugging
+$app->get('/debuginformation/:app_id', function ($app_id)
+{  
+	global $apiVersion;
+	
+	try {	
+		echo 'Baker Cloud CE API: Debug Information';
+		echo '<BR>API Version: ' . $apiVersion;
+		echo '<BR>Development Mode: ' . isInDevelopmentMode($app_id);
+		echo '<BR>Subscription Behavior: ' . getSubscriptionBehavior($app_id);
+		echo '<BR>iTunes Production Level: ' . getiTunesProductionLevel($app_id);
+		echo '<BR>iTunes Caching Duration: ' . getiTunesCachingDuration($app_id);
+	}
+	catch(PDOException $e) {
 	}
 });
 
@@ -209,6 +235,9 @@ $app->get('/issues/:app_id/:user_id', function ($app_id, $user_id)
 			}
 			$i++;
 		}
+	
+		logAnalyticMetric(AnalyticType::ApiInteraction,1,NULL,$app_id,$user_id);
+	
 		echo json_encode($IssuesArray);
 	}
 	catch(PDOException $e) {
@@ -256,7 +285,10 @@ $app->get('/issue/:app_id/:user_id/:name', function ($app_id, $user_id, $name) u
 		
 			if ($allow_download) {
 				
-				if(isInDevelopmentMode($app_id)=="TRUE"){logMessage(LogType::Info,"Downloading ISSUE: " . $name . " for APP ID: " . $app_id . " USER ID: " . $user_id);}
+				if((isInDevelopmentMode($app_id)=="TRUE") && !($app->request()->isHead())){logMessage(LogType::Info,"Downloading ISSUE: " . $name . " for APP ID: " . $app_id . " USER ID: " . $user_id);}
+				
+				logAnalyticMetric(AnalyticType::ApiInteraction,1,NULL,$app_id,$user_id);
+				if(!($app->request()->isHead())){logAnalyticMetric(AnalyticType::Download,1,$name,$app_id,$user_id);}
 				
 				// Redirect to the downloadable file, nothing else needed in API call
 				$app->response()->redirect($issue['URL'], 303);
@@ -302,12 +334,21 @@ $app->get('/purchases/:app_id/:user_id', function ($app_id, $user_id)
 			if(isInDevelopmentMode($app_id)=="TRUE"){logMessage(LogType::Info,"Time since last validating receipt for APP ID: " . $app_id . " USER ID: " . $user_id . " = "  . $interval->format('%h hours %i minutes') );}
 			
 			// Only refresh and re-verify receipt if greater than the iTunesCachingDuration - or greater than 1 whole day
-			if ((getiTunesCachingDuration($app_id) == 0) || ($interval->format('%h') > getiTunesCachingDuration($app_id)) || ($interval->format('%a') > 1)) {
+			if ((getiTunesCachingDuration($app_id) == -1) || ($interval->format('%h') > getiTunesCachingDuration($app_id)) || ($interval->format('%a') > 1)) {
 				// Check the latest receipt from the subscription table
 	
 				if ($base64_latest_receipt) {		
-					$data = verifyReceipt($base64_latest_receipt, $app_id, $user_id);
-	
+					// Verify Receipt - with logic to fall back to Sandbox test if Production Receipt fails (error code 21007)
+                try{
+                        $data = verifyReceipt($base64_latest_receipt, $app_id, $user_id);
+                }
+                catch(Exception $e) {
+                        if($e->getCode() == "21007"){
+                                logMessage(LogType::Info,"Confirming purchase for APP ID - Sandbox Receipt used in Production, retrying against Sandbox iTunes API: " . $app_id . " USER ID: " . $user_id . " TYPE: " . $type);
+                                $data = verifyReceipt($base64_latest_receipt, $app_id, $user_id, TRUE);
+                    }
+                }    
+
 					markIssuesAsPurchased($data, $app_id, $user_id);
 	
 					// Check if there is an active subscription for the user.  Status=0 is true.
@@ -350,6 +391,8 @@ $app->get('/purchases/:app_id/:user_id', function ($app_id, $user_id)
 								WHERE APP_ID = '$app_id' AND USER_ID = '$user_id'");
 			
 		$purchased_product_ids = $result->fetchAll(PDO::FETCH_COLUMN);
+		
+		logAnalyticMetric(AnalyticType::ApiInteraction,1,NULL,$app_id,$user_id);
 		
 		echo json_encode(array(
 			'issues' => $purchased_product_ids,
@@ -399,6 +442,9 @@ $app->get('/itunes/:app_id', function ($app_id)
 			$AtomXML.= "</entry>";
 		}
 		$AtomXML.= "</feed>";
+		
+		logAnalyticMetric(AnalyticType::ApiInteraction,1,NULL,$app_id,$user_id);
+		
 		echo utf8_encode($AtomXML);
 	}
 	catch(Exception $e) {
@@ -422,7 +468,16 @@ $app->post('/confirmpurchase/:app_id/:user_id', function ($app_id, $user_id) use
 	if(isInDevelopmentMode($app_id)=="TRUE"){logMessage(LogType::Info,"Confirming purchase for APP ID: " . $app_id . " USER ID: " . $user_id . " TYPE: " . $type);}
 	
 	try {
-		$iTunesReceiptInfo = verifyReceipt($receiptdata, $app_id, $user_id);
+		 // Verify Receipt - with logic to fall back to Sandbox test if Production Receipt fails (error code 21007)
+       try{
+               $iTunesReceiptInfo = verifyReceipt($receiptdata, $app_id, $user_id);
+       }
+       catch(Exception $e) {
+               if($e->getCode() == "21007"){
+                       logMessage(LogType::Info,"Confirming purchase for APP ID - Sandbox Receipt used in Production, retrying against Sandbox iTunes API: " . $app_id . " USER ID: " . $user_id . " TYPE: " . $type);
+                       $iTunesReceiptInfo = verifyReceipt($receiptdata, $app_id, $user_id, TRUE);
+           }
+       }   
 		
 		$sql = "INSERT IGNORE INTO RECEIPTS (APP_ID, QUANTITY, PRODUCT_ID, TYPE, TRANSACTION_ID, USER_ID, PURCHASE_DATE, 
 	 		    			ORIGINAL_TRANSACTION_ID, ORIGINAL_PURCHASE_DATE, APP_ITEM_ID, VERSION_EXTERNAL_IDENTIFIER, BID, BVRS, BASE64_RECEIPT) 
@@ -452,8 +507,10 @@ $app->post('/confirmpurchase/:app_id/:user_id', function ($app_id, $user_id) use
 			}else if($type == 'issue'){
 				markIssueAsPurchased($iTunesReceiptInfo->receipt->product_id, $app_id, $user_id);				
 			}else if($type == 'free-subscription'){
-				// Nothing to do, as the server assumes free subscriptions won't be enabled				
+				// Nothing to do, as the server assumes free subscriptions don't need to be handled in this way			
 			}				
+
+			logAnalyticMetric(AnalyticType::ApiInteraction,1,NULL,$app_id,$user_id);
 
 		}
 		catch(PDOException $e) {
@@ -487,6 +544,9 @@ $app->post('/apns/:app_id/:user_id', function ($app_id, $user_id) use($app)
 		$stmt->bindParam("user_id", $user_id);
 		$stmt->bindParam("apns_token", $apns_token);
 		$stmt->execute();
+		
+		logAnalyticMetric(AnalyticType::ApiInteraction,1,NULL,$app_id,$user_id);
+		
 		echo '{"success":{"message":"' . $apns_token . '"}}';
 	}
 	catch(PDOException $e) {
@@ -499,7 +559,7 @@ $app->post('/apns/:app_id/:user_id', function ($app_id, $user_id) use($app)
 // Utility Functions
 // ************************************************
 
-// Log Error Messages for tracking and debugging purposes, also displayed in the Baker Cloud Console (CE) for issue debugging
+// Log Error Messages for tracking and debugging purposes, also displayed in the BakerCloud Console for issue debugging
 function logMessage($logType, $logMessage)
 {
 	global $dbContainer;
@@ -515,7 +575,30 @@ function logMessage($logType, $logMessage)
 		$stmt->execute();
 	}
 	catch(PDOException $e) {
-		// Error occurred, just ignore because if it failed in this logMessage method not much we can do
+		// Error occurred, just ignore because if it failed in this logMessage method not much we can do, ignore
+	}
+}
+
+// Log Analytic Metrics for tracking purposes and basic display in the dashboard
+function logAnalyticMetric($analytic_type, $analytic_value, $metadata, $app_id, $user_id)
+{
+	global $dbContainer;
+	$db = $dbContainer['db'];
+	
+	$sql = "INSERT INTO ANALYTICS (APP_ID, USER_ID, TYPE, VALUE, METADATA) 
+		    			VALUES (:app_id, :user_id, :analytic_type, :analytic_value, :metadata)";
+		    			
+	try {
+		$stmt = $db->prepare($sql);
+		$stmt->bindParam("app_id", $app_id);	
+		$stmt->bindParam("user_id", $user_id);
+		$stmt->bindParam("analytic_type", $analytic_type);
+		$stmt->bindParam("analytic_value", $analytic_value);
+		$stmt->bindParam("metadata", $metadata);						
+		$stmt->execute();
+	}
+	catch(PDOException $e) {
+		// Error occurred, just ignore because if it failed in this logAnalyticMetric method not much we can do, ignore
 	}
 }
 
@@ -551,6 +634,22 @@ function getiTunesProductionLevel($app_id)
 	}
 }
 
+// Retrieve the Subscription Behavior setting for marking issues as purchased
+function getSubscriptionBehavior($app_id)
+{
+	global $subscriptionBehavior;
+	global $dbContainer;
+	$db = $dbContainer['db'];
+			
+	if($subscriptionBehavior != ""){
+		return $subscriptionBehavior;
+	}
+	else{
+		$result = $db->query("SELECT SUBSCRIPTION_BEHAVIOR FROM PUBLICATION WHERE APP_ID = '$app_id' LIMIT 0, 1");	
+		return $result->fetchColumn();
+	}
+}
+
 // Retrieve the iTunes Caching Duration for re-validating Apple Receipts
 function getiTunesCachingDuration($app_id)
 {
@@ -566,12 +665,6 @@ function getiTunesCachingDuration($app_id)
 		return $result->fetchColumn();
 	}
 }
-
-// Global iTunes Production Level Setting
-$iTunesProductionLevel = '';
-
-// Global iTunes Receipt Validation Caching Setting
-$iTunesCachingDuration = 0;
 
 // Mark all available (paid) issues as purchased for a given user
 function markIssuesAsPurchased($app_store_data, $app_id, $user_id)
@@ -604,31 +697,40 @@ function markIssuesAsPurchased($app_store_data, $app_id, $user_id)
 	// Update Subscriptions Table for user with current active subscription start and expiration date
 	updateSubscription($app_id, $user_id, $startDateFormatted, $endDateFormatted);
 
-	// Lookup development mode condition for Publication if in Development mark all issues as purchased, if production
-	// mark only those that exist within subscription period
-	//$result = $db->query("SELECT DEVELOPMENT_MODE FROM PUBLICATION WHERE APP_ID = '$app_id' LIMIT 0, 1");	
-	//$development_mode = $result->fetchColumn();
-	
-	if(isInDevelopmentMode($app_id)=="TRUE"){
-		// For Testing, marking only with Subscription start date, not expiration date	
-		//$result = $db->query("SELECT PRODUCT_ID FROM ISSUES
-	    //   							WHERE APP_ID = '$app_id'
-	    //		  						AND `DATE` >= '$issuesStartDateFormatted'
-	    //		  						AND PRICING = 'paid'");
-		
-		// For Testing Purposes in development mark all as available
+	// If we are in Sandbox Mode, unlock all issues by default for testing purposes	
+	if(getiTunesProductionLevel($app_id)=="sandbox"){
+
 		$result = $db->query("SELECT PRODUCT_ID FROM ISSUES
 		  							 WHERE APP_ID = '$app_id'
 		  							 AND PRICING = 'paid'");
 	}
 	else{
-		// For Production
-		$result = $db->query("SELECT PRODUCT_ID FROM ISSUES
-									WHERE APP_ID = '$app_id'
-									AND `DATE` >= '$issuesStartDateFormatted'
-									AND `DATE` <= '$issuesEndDateFormatted'
-									AND PRICING = 'paid'
-									AND AVAILABILITY = 'published'");
+		// If we are in Production - determine based on Subscription Behavior setting
+		
+		if(getSubscriptionBehavior($app_id)=="all"){
+		
+			$result = $db->query("SELECT PRODUCT_ID FROM ISSUES
+		  							 WHERE APP_ID = '$app_id'
+		  							 AND PRICING = 'paid'");
+	  							 
+		}else if(getSubscriptionBehavior($app_id)=="term"){
+		
+			$result = $db->query("SELECT PRODUCT_ID FROM ISSUES
+								WHERE APP_ID = '$app_id'
+								AND `DATE` >= '$issuesStartDateFormatted'
+								AND `DATE` <= '$issuesEndDateFormatted'
+								AND PRICING = 'paid'
+								AND AVAILABILITY = 'published'");			
+		}else{
+		
+			//Default to 'term' if for some reason the above fails
+			$result = $db->query("SELECT PRODUCT_ID FROM ISSUES
+								WHERE APP_ID = '$app_id'
+								AND `DATE` >= '$issuesStartDateFormatted'
+								AND `DATE` <= '$issuesEndDateFormatted'
+								AND PRICING = 'paid'
+								AND AVAILABILITY = 'published'");	
+		}
 	}
 
 	$product_ids_to_mark = $result->fetchAll(PDO::FETCH_COLUMN);
@@ -639,7 +741,7 @@ function markIssuesAsPurchased($app_store_data, $app_id, $user_id)
 	$stmt = $db->prepare($insert);
 	
 	foreach($product_ids_to_mark as $key => $product_id) {
-		$stmt->bindParam(':product_id', $product_id);
+		$stmt->bindParam('product_id', $product_id);
 		$stmt->execute();
 	}
 }
@@ -715,7 +817,7 @@ function checkSubscription($app_id, $user_id)
 
 // Validate InApp Purchase Receipt, by calling the Apple iTunes verifyReceipt method
 // *Note that this seems to take between 2-4 seconds on average
-function verifyReceipt($receipt, $app_id, $user_id)
+function verifyReceipt($receipt, $app_id, $user_id, $sandbox_override = FALSE)
 {
 	global $dbContainer;
 	$db = $dbContainer['db'];
@@ -726,7 +828,7 @@ function verifyReceipt($receipt, $app_id, $user_id)
 	$result = $db->query("SELECT ITUNES_SHARED_SECRET FROM PUBLICATION WHERE APP_ID = '$app_id' LIMIT 0, 1");	
 	$sharedSecret = $result->fetchColumn();
 	
-	if (getiTunesProductionLevel($app_id)=="sandbox") {
+	if (getiTunesProductionLevel($app_id)=="sandbox" || $sandbox_override == TRUE) {
 		$endpoint = 'https://sandbox.itunes.apple.com/verifyReceipt';
 	}
 	else {
@@ -766,8 +868,8 @@ function verifyReceipt($receipt, $app_id, $user_id)
 
 	if (!isset($data->status) || ($data->status != 0 && $data->status != 21006)) {
 		$product_id = $data->receipt->product_id;
-		logMessage(LogType::Warning, "Invalid receipt for APP ID: " . $app_id . " USER ID: " . $user_id . " PRODUCT ID: " . $product_id . " STATUS: " . $data->status);
-		throw new Exception('Invalid Receipt');
+		logMessage(LogType::Warning, "Invalid receipt for APP ID: " . $app_id . " USER ID: " . $user_id . " STATUS: " . $data->status);
+		throw new Exception('Invalid Receipt', $data->status);
 	}
 
 	return $data;
@@ -787,6 +889,13 @@ abstract class LogType
 	const Info = 'Info';
 	const Warning = 'Warning';
 	const Error = 'Error';	
+}
+
+// PHP doesn't support Enums so make a simple class for AnalyticType
+abstract class AnalyticType
+{
+	const Download = 'download';
+	const ApiInteraction = 'api_interaction';	
 }
 
 // Timer class for debugging and logging use
