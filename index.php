@@ -272,7 +272,7 @@ $app->get('/issue/:app_id/:user_id/:name', function ($app_id, $user_id, $name) u
 			$allow_download = false;
 			
 			// Validate that the Product ID (from Issue Name) is an available download for given user		
-			if ($product_id) {
+			if ($product_id && $issue['PRICING'] != 'free') {
 				// Allow download if the issue is marked as purchased
 				$result = $db->query("SELECT COUNT(*) FROM PURCHASES 
 													WHERE APP_ID = '$app_id' AND USER_ID = '$user_id' AND PRODUCT_ID = '$product_id'");		
