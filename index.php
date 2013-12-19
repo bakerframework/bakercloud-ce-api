@@ -166,8 +166,6 @@ $app->get('/checkinstall/', function ()
 	
 		$result->execute();
 		$checkInstall = $result->fetchAll();
-
-		logAnalyticMetric(AnalyticType::ApiInteraction,1,NULL,$app_id,$user_id);
 		
 		echo '{"BakerCloud API":{"Success":"Database Connection Test Successful"}}';
 	}
