@@ -865,7 +865,6 @@ function verifyReceipt($receipt, $app_id, $user_id, $sandbox_override = FALSE)
 	}
 
 	if (!isset($data->status) || ($data->status != 0 && $data->status != 21006)) {
-		$product_id = $data->receipt->product_id;
 		logMessage(LogType::Warning, "Invalid receipt for APP ID: " . $app_id . " USER ID: " . $user_id . " STATUS: " . $data->status);
 		throw new Exception('Invalid Receipt', $data->status);
 	}
