@@ -33,7 +33,7 @@ $iTunesCachingDuration = -1;
 $subscriptionBehavior = '';
 
 // API Version
-$apiVersion = '1.1';
+$apiVersion = '1.1.1';
 
 // DB Setup for Pimple Container
 // BakerCloud API SETUP CONFIGURATION SETTING
@@ -417,7 +417,12 @@ $app->get('/itunes/:app_id', function ($app_id)
 		$ITUNES_UPDATED = $result->fetchColumn();
 
 		if(!$ITUNES_UPDATED)
-			throw new Exception('Invalid APP ID');
+		{
+			if($ITUNES_UPDATED == NULL)
+				$ITUNES_UPDATED = date("Y-m-d H:i:s");
+			else
+				throw new Exception('Invalid APP ID');
+		}	
 			
 		$iTunesUpdateDate = new DateTime($ITUNES_UPDATED);
 				
