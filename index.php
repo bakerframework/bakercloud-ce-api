@@ -188,7 +188,7 @@ $app->get('/debuginformation/:app_id', function ($app_id)
 		echo '<BR>iTunes Production Level: ' . getiTunesProductionLevel($app_id);
 		echo '<BR>iTunes Caching Duration: ' . getiTunesCachingDuration($app_id);
 	}
-	catch(PDOException $e) {
+	catch(Exception $e) {
 	}
 });
 
@@ -471,54 +471,65 @@ $app->post('/confirmpurchase/:app_id/:user_id', function ($app_id, $user_id) use
 	if(isInDevelopmentMode($app_id)=="TRUE"){logMessage(LogType::Info,"Confirming purchase for APP ID: " . $app_id . " USER ID: " . $user_id . " TYPE: " . $type);}
 	
 	try {
-		 // Verify Receipt - with logic to fall back to Sandbox test if Production Receipt fails (error code 21007)
-       try{
-               $iTunesReceiptInfo = verifyReceipt($receiptdata, $app_id, $user_id);
-       }
-       catch(Exception $e) {
-               if($e->getCode() == "21007"){
-                       logMessage(LogType::Info,"Confirming purchase for APP ID - Sandbox Receipt used in Production, retrying against Sandbox iTunes API: " . $app_id . " USER ID: " . $user_id . " TYPE: " . $type);
-                       $iTunesReceiptInfo = verifyReceipt($receiptdata, $app_id, $user_id, TRUE);
-           }
-       }   
+		// Verify Receipt - with logic to fall back to Sandbox test if Production Receipt fails (error code 21007)
+		try{
+		       $iTunesReceiptInfo = verifyReceipt($receiptdata, $app_id, $user_id);
+		}
+		catch(Exception $e) {
+		       if($e->getCode() == "21007"){
+		               logMessage(LogType::Info,"Confirming purchase for APP ID - Sandbox Receipt used in Production, retrying against Sandbox iTunes API: " . $app_id . " USER ID: " . $user_id . " TYPE: " . $type);
+		               $iTunesReceiptInfo = verifyReceipt($receiptdata, $app_id, $user_id, TRUE);
+		   }
+		}   
 		
 		$sql = "INSERT IGNORE INTO RECEIPTS (APP_ID, QUANTITY, PRODUCT_ID, TYPE, TRANSACTION_ID, USER_ID, PURCHASE_DATE, 
 	 		    			ORIGINAL_TRANSACTION_ID, ORIGINAL_PURCHASE_DATE, APP_ITEM_ID, VERSION_EXTERNAL_IDENTIFIER, BID, BVRS, BASE64_RECEIPT) 
 	 		    			VALUES (:app_id, :quantity, :product_id, :type, :transaction_id, :user_id, :purchase_date, :original_transaction_id,
 	 		    					  :original_purchase_date, :app_item_id, :version_external_identifier, :bid, :bvrs, :base64_receipt)";
-		try {
-			$stmt = $db->prepare($sql);
-			$stmt->bindParam("app_id", $app_id);
-			$stmt->bindParam("quantity", $iTunesReceiptInfo->receipt->quantity);
-			$stmt->bindParam("product_id", $iTunesReceiptInfo->receipt->product_id);
-			$stmt->bindParam("type", $type);
-			$stmt->bindParam("transaction_id", $iTunesReceiptInfo->receipt->transaction_id);
-			$stmt->bindParam("user_id", $user_id);
-			$stmt->bindParam("purchase_date", $iTunesReceiptInfo->receipt->purchase_date);
-			$stmt->bindParam("original_transaction_id", $iTunesReceiptInfo->receipt->original_transaction_id);
-			$stmt->bindParam("original_purchase_date", $iTunesReceiptInfo->receipt->original_purchase_date);
-			$stmt->bindParam("app_item_id", $iTunesReceiptInfo->receipt->item_id);
-			$stmt->bindParam("version_external_identifier", $iTunesReceiptInfo->receipt->version_external_identifier);
-			$stmt->bindParam("bid", $iTunesReceiptInfo->receipt->bid);
-			$stmt->bindParam("bvrs", $iTunesReceiptInfo->receipt->bvrs);
-			$stmt->bindParam("base64_receipt", $receiptdata);
-			$stmt->execute();
-
-			// If successful, record the user's purchase
-			if($type == 'auto-renewable-subscription'){
-				markIssuesAsPurchased($iTunesReceiptInfo,$app_id,$user_id);
-			}else if($type == 'issue'){
-				markIssueAsPurchased($iTunesReceiptInfo->receipt->product_id, $app_id, $user_id);				
-			}else if($type == 'free-subscription'){
-				// Nothing to do, as the server assumes free subscriptions don't need to be handled in this way			
-			}				
-
-			logAnalyticMetric(AnalyticType::ApiInteraction,1,NULL,$app_id,$user_id);
-
+	    // Jailbroken Device Hack Check
+	    // Jailbroken devices often try to spoof purchases by using fake receipts
+	    // Compare expected APP_ID to the Receipt (BID) Bundle Identifier.
+	    if($app_id == $iTunesReceiptInfo->receipt->bid)
+	    {
+			try {
+				$stmt = $db->prepare($sql);
+				$stmt->bindParam("app_id", $app_id);
+				$stmt->bindParam("quantity", $iTunesReceiptInfo->receipt->quantity);
+				$stmt->bindParam("product_id", $iTunesReceiptInfo->receipt->product_id);
+				$stmt->bindParam("type", $type);
+				$stmt->bindParam("transaction_id", $iTunesReceiptInfo->receipt->transaction_id);
+				$stmt->bindParam("user_id", $user_id);
+				$stmt->bindParam("purchase_date", $iTunesReceiptInfo->receipt->purchase_date);
+				$stmt->bindParam("original_transaction_id", $iTunesReceiptInfo->receipt->original_transaction_id);
+				$stmt->bindParam("original_purchase_date", $iTunesReceiptInfo->receipt->original_purchase_date);
+				$stmt->bindParam("app_item_id", $iTunesReceiptInfo->receipt->item_id);
+				$stmt->bindParam("version_external_identifier", $iTunesReceiptInfo->receipt->version_external_identifier);
+				$stmt->bindParam("bid", $iTunesReceiptInfo->receipt->bid);
+				$stmt->bindParam("bvrs", $iTunesReceiptInfo->receipt->bvrs);
+				$stmt->bindParam("base64_receipt", $receiptdata);
+				$stmt->execute();
+	
+				// If successful, record the user's purchase
+				if($type == 'auto-renewable-subscription'){
+					markIssuesAsPurchased($iTunesReceiptInfo,$app_id,$user_id);
+				}else if($type == 'issue'){
+					markIssueAsPurchased($iTunesReceiptInfo->receipt->product_id, $app_id, $user_id);				
+				}else if($type == 'free-subscription'){
+					// Nothing to do, as the server assumes free subscriptions don't need to be handled in this way			
+				}				
+	
+				logAnalyticMetric(AnalyticType::ApiInteraction,1,NULL,$app_id,$user_id);
+	
+			}
+			catch(PDOException $e) {
+				logMessage(LogType::Error, $e->getMessage());
+				echo '{"error":{"text":"' . $e->getMessage() . '"}}';
+			}
 		}
-		catch(PDOException $e) {
-			logMessage(LogType::Error, $e->getMessage());
-			echo '{"error":{"text":"' . $e->getMessage() . '"}}';
+		else{
+			logMessage(LogType::Error, "Invalid Receipt Bundle Identifier: " . $iTunesReceiptInfo->receipt->bid);
+			header('HTTP/1.1 404 Not Found');
+			die();
 		}
 	}
 	catch(Exception $e) {
