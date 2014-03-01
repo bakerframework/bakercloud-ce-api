@@ -446,7 +446,7 @@ $app->get('/itunes/:app_id', function ($app_id)
 		}
 		$AtomXML.= "</feed>";
 		
-		logAnalyticMetric(AnalyticType::ApiInteraction,1,NULL,$app_id,$user_id);
+		logAnalyticMetric(AnalyticType::ApiInteraction,1,NULL,$app_id,NULL);
 		
 		echo utf8_encode($AtomXML);
 	}
